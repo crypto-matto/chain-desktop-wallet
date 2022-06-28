@@ -10,6 +10,8 @@ export const CRYPTO_COM_PRICE_API_BASE_URL = {
 export const NV_GRAPHQL_API_ENDPOINT = 'https://crypto.com/nft-api/graphql';
 export const IPFS_MIDDLEWARE_SERVER_UPLOAD_ENDPOINT =
   'https://crypto.org/ipfs-middleware-server/uploads';
+export const NCW_NFT_MIDDLEWARE_SERVER_ENDPOINT =
+  'https://cronos.org/ncw-quandra-api-middleware-server/quantra/v1/nft';
 export const DEFAULT_CLIENT_MEMO = 'client:chain-desktop-app';
 export const CLOUDFLARE_TRACE_URI = 'https://www.cloudflare.com/cdn-cgi/trace';
 
@@ -280,6 +282,8 @@ export const NFT_WRAPPED_ETH_DENOM_SCHEMA = {
 
 export const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 export const MAX_VIDEO_SIZE = 20 * 1024 * 1024;
+
+export const AUTO_UPDATE_DISABLE_DURATIONS = [14, 30];
 
 const TestNetConfig: WalletConfig = {
   enabled: true,

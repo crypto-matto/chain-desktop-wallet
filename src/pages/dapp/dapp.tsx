@@ -17,6 +17,7 @@ import { useBookmark } from './hooks/useBookmark';
 import { useShowDisclaimer } from './hooks/useShowDisclaimer';
 import { DisclaimerModal } from './components/DisclaimerModal/DisclaimerModal';
 import { AnalyticsService } from '../../service/analytics/AnalyticsService';
+import CronosDAppsTab from './components/Tabs/CronosDAppsTab';
 
 const { Header, Content } = Layout;
 const { TabPane } = Tabs;
@@ -36,7 +37,7 @@ const DappList: Dapp[] = [
     alt: 'tectonic-logo',
     description:
       'Tectonic is a cross-chain money market for earning passive yield and accessing instant backed loans.',
-    url: 'https://app.tectonic.finance/',
+    url: 'https://tectonic.finance/',
   },
   // {
   //   name: 'Cronos Chimp Club',
@@ -61,13 +62,14 @@ const DappList: Dapp[] = [
   // },
 ];
 
-const TabKey = { popular: 'popular', saved: 'saved' };
+const TabKey = { popular: 'popular', cronosDapps: 'Cronos DApps', saved: 'saved' };
 
 const DappPage = () => {
   const setPageLock = useSetRecoilState(pageLockState);
   const currentSession = useRecoilValue(sessionState);
   const [selectedDapp, setSelectedDapp] = useState<Dapp>();
   const [selectedURL, setSelectedURL] = useState('');
+  const [selectedDomain, setSelectedDomain] = useState('');
   const [t] = useTranslation();
   const browserRef = useRef<DappBrowserRef>(null);
 
@@ -150,6 +152,7 @@ const DappPage = () => {
           isRefreshButtonDisabled: webviewNavigationState?.canRefresh === false,
           isBookmarkButtonDisabled: false,
           isBookmarkButtonHighlighted: bookmarkButtonHighlighted,
+          isExitButtonDisabled: shouldShowBrowser === false,
         }}
         buttonCallbacks={{
           onBackButtonClick: () => {
@@ -180,6 +183,17 @@ const DappPage = () => {
               faviconURL: bookMarkInfo.faviconURL,
             });
           },
+          onExitButtonClick: () => {
+            setSelectedDapp(undefined);
+            setSelectedURL('');
+            setAddressBarValue('');
+            setWebviewState('idle');
+            setWebviewNavigationState({
+              canGoBack: false,
+              canGoForward: false,
+              canRefresh: false,
+            });
+          },
         }}
         onSearch={value => {
           setSelectedDapp(undefined);
@@ -189,11 +203,11 @@ const DappPage = () => {
             setSelectedURL(value);
           } else {
             // google search
-            setSelectedURL(`http://www.google.com/search?q=${value}`);
+            setSelectedURL(`https://www.bing.com/search?q=${value}`);
           }
         }}
       />
-      {shouldShowBrowser ? (
+      {shouldShowBrowser && (
         <DappBrowser
           dapp={selectedDapp}
           dappURL={selectedURL}
@@ -206,67 +220,84 @@ const DappPage = () => {
             if (!url || url.length < 1) {
               return;
             }
+
+            const domain = new URL(url).hostname;
+            if (selectedDomain !== domain) {
+              analyticsService.logBrowserDomain(domain);
+              setSelectedDomain(domain ?? '');
+            }
+
             setAddressBarValue(url);
             updateBookmarkButtonBeHighlighted();
           }}
         />
-      ) : (
-        <>
-          <Header className="site-layout-background">{t('dapp.title')}</Header>
-          <div className="header-description">{t('dapp.description')}</div>
-          <Content>
-            <Tabs
-              defaultActiveKey={selectedTabKey}
-              onChange={value => {
-                setSelectedTabKey(value);
-              }}
-            >
-              <TabPane tab={t('dapp.tab.popular.title')} key={TabKey.popular}>
-                <div className="dapps">
-                  <div className="cards">
-                    {DappList.map((dapp, idx) => {
-                      return (
-                        <BorderlessCard
-                          key={`partner-${idx}`}
-                          onClick={() => {
-                            if (shouldShowDisclaimer(dapp.url)) {
-                              setSelectedShowDisclaimerURL(dapp.url);
-                              return;
-                            }
-
-                            setSelectedDapp(dapp);
-                          }}
-                        >
-                          <div className="logo">
-                            <img src={dapp.logo} alt={dapp.alt} />
-                          </div>
-                          <div className="text">
-                            <h3>{dapp.name}</h3>
-                            <p>{dapp.description}</p>
-                          </div>
-                        </BorderlessCard>
-                      );
-                    })}
-                  </div>
-                </div>
-              </TabPane>
-              <TabPane tab={t('dapp.tab.saved.title')} key={TabKey.saved}>
-                <SavedTab
-                  onClick={bookmark => {
-                    if (shouldShowDisclaimer(bookmark.url)) {
-                      setSelectedShowDisclaimerURL(bookmark.url);
-                      return;
-                    }
-
-                    setSelectedDapp(undefined);
-                    setSelectedURL(bookmark.url);
-                  }}
-                />
-              </TabPane>
-            </Tabs>
-          </Content>
-        </>
       )}
+      <div
+        style={{
+          display: shouldShowBrowser ? 'none' : 'block',
+        }}
+      >
+        <Header className="site-layout-background">{t('dapp.title')}</Header>
+        <div className="header-description">{t('dapp.description')}</div>
+        <Content>
+          <Tabs
+            defaultActiveKey={selectedTabKey}
+            onChange={value => {
+              setSelectedTabKey(value);
+            }}
+          >
+            <TabPane tab={t('dapp.tab.popular.title')} key={TabKey.popular}>
+              <div className="dapps">
+                <div className="cards">
+                  {DappList.map((dapp, idx) => {
+                    return (
+                      <BorderlessCard
+                        key={`partner-${idx}`}
+                        onClick={() => {
+                          if (shouldShowDisclaimer(dapp.url)) {
+                            setSelectedShowDisclaimerURL(dapp.url);
+                            return;
+                          }
+
+                          setSelectedDapp(dapp);
+                        }}
+                      >
+                        <div className="logo">
+                          <img src={dapp.logo} alt={dapp.alt} />
+                        </div>
+                        <div className="text">
+                          <h3>{dapp.name}</h3>
+                          <p>{dapp.description}</p>
+                        </div>
+                      </BorderlessCard>
+                    );
+                  })}
+                </div>
+              </div>
+            </TabPane>
+            <TabPane tab="Cronos DApps" key={TabKey.cronosDapps}>
+              <CronosDAppsTab
+                onClickDapp={dapp => {
+                  setSelectedURL(dapp.link);
+                }}
+              />
+            </TabPane>
+            <TabPane tab={t('dapp.tab.saved.title')} key={TabKey.saved}>
+              <SavedTab
+                onClick={bookmark => {
+                  if (shouldShowDisclaimer(bookmark.url)) {
+                    setSelectedShowDisclaimerURL(bookmark.url);
+                    return;
+                  }
+
+                  setSelectedDapp(undefined);
+                  setSelectedURL(bookmark.url);
+                }}
+              />
+            </TabPane>
+          </Tabs>
+        </Content>
+      </div>
     </Layout>
   );
 };

@@ -42,7 +42,7 @@ import {
   pageLockState,
   NavbarMenuKey,
 } from '../../recoil/atom';
-import { ellipsis, checkIfTestnet } from '../../utils/utils';
+import { ellipsis, checkIfTestnet, getCronosEvmAsset } from '../../utils/utils';
 import WalletIcon from '../../assets/icon-wallet-grey.svg';
 import IconHome from '../../svg/IconHome';
 // import IconSend from '../../svg/IconSend';
@@ -71,18 +71,28 @@ import {
   MAX_INCORRECT_ATTEMPTS_ALLOWED,
   SHOW_WARNING_INCORRECT_ATTEMPTS,
 } from '../../config/StaticConfig';
-import { generalConfigService } from '../../storage/GeneralConfigService';
+import { generalConfigService } from '../../service/storage/GeneralConfigService';
 import PasswordFormModal from '../../components/PasswordForm/PasswordFormModal';
-import { secretStoreService } from '../../storage/SecretStoreService';
+import { secretStoreService } from '../../service/storage/SecretStoreService';
 import SessionLockModal from '../../components/PasswordForm/SessionLockModal';
 import LedgerModalPopup from '../../components/LedgerModalPopup/LedgerModalPopup';
 import SuccessCheckmark from '../../components/SuccessCheckmark/SuccessCheckmark';
 import IconLedger from '../../svg/IconLedger';
 import { ISignerProvider } from '../../service/signers/SignerProvider';
-import { UserAsset } from '../../models/UserAsset';
+import { UserAsset, UserAssetType } from '../../models/UserAsset';
 import IconCro from '../../svg/IconCro';
 import IconEth from '../../svg/IconEth';
+import { BridgeService } from '../../service/bridge/BridgeService';
+import {
+  DefaultMainnetBridgeConfigs,
+  DefaultTestnetBridgeConfigs,
+} from '../../service/bridge/BridgeConfig';
+import { MainNetEvmConfig, TestNetEvmConfig } from '../../config/StaticAssets';
+import { DerivationPathStandard } from '../../service/signers/LedgerSigner';
+
 // import i18n from '../../language/I18n';
+
+const { ipcRenderer } = window.require('electron');
 
 interface HomeLayoutProps {
   children?: React.ReactNode;
@@ -274,6 +284,7 @@ function HomeLayout(props: HomeLayoutProps) {
       const tendermintAddress = await device.getAddress(
         walletSession.wallet.addressIndex,
         walletSession.wallet.config.network.addressPrefix,
+        walletSession.wallet.derivationPathStandard ?? DerivationPathStandard.BIP44,
         false,
       );
 
@@ -320,7 +331,11 @@ function HomeLayout(props: HomeLayoutProps) {
     try {
       const device: ISignerProvider = createLedgerDevice();
 
-      ledgerEvmAddress = await device.getEthAddress(walletSession.wallet.addressIndex, false);
+      ledgerEvmAddress = await device.getEthAddress(
+        walletSession.wallet.addressIndex,
+        walletSession.wallet.derivationPathStandard ?? DerivationPathStandard.BIP44,
+        false,
+      );
       setIsLedgerEthAppConnected(true);
 
       await new Promise(resolve => {
@@ -429,18 +444,37 @@ function HomeLayout(props: HomeLayoutProps) {
     }, 1000);
   };
 
-  const checkCorrectExplorerUrl = (walletSession?: Session) => {
+  const checkCorrectExplorerUrl = async (walletSession?: Session) => {
     if (!walletSession || !walletSession.wallet) {
       return;
     }
 
+    const assets = await walletService.retrieveWalletAssets(walletSession.wallet.identifier);
+    const cronosAsset = getCronosEvmAsset(assets);
+    const checkDefaultExplorerUrl = checkIfTestnet(walletSession.wallet.config.network)
+      ? TestNetEvmConfig.explorerUrl
+      : MainNetEvmConfig.explorerUrl;
+
     setTimeout(async () => {
-      if (!walletSession.activeAsset?.config?.explorer) {
+      if (
+        !walletSession.activeAsset?.config?.explorer ||
+        // Check if explorerUrl has been updated with latest default
+        cronosAsset?.config?.explorerUrl !== checkDefaultExplorerUrl
+      ) {
         const updateExplorerUrlNotificationKey = 'updateExplorerUrlNotificationKey';
+
+        // Update to Default Bridge Configs
+        const bridgeService = new BridgeService(walletService.storageService);
+        bridgeService.updateBridgeConfiguration(DefaultTestnetBridgeConfigs.CRYPTO_ORG_TO_CRONOS);
+        bridgeService.updateBridgeConfiguration(DefaultTestnetBridgeConfigs.CRONOS_TO_CRYPTO_ORG);
+        bridgeService.updateBridgeConfiguration(DefaultMainnetBridgeConfigs.CRYPTO_ORG_TO_CRONOS);
+        bridgeService.updateBridgeConfiguration(DefaultMainnetBridgeConfigs.CRONOS_TO_CRYPTO_ORG);
 
         // Update All Assets in All Wallets
         const allWallets = await walletService.retrieveAllWallets();
         allWallets.forEach(async wallet => {
+          const isTestnet = checkIfTestnet(wallet.config.network);
+
           const settingsDataUpdate: SettingsDataUpdate = {
             walletId: wallet.identifier,
             chainId: wallet.config.network.chainId,
@@ -461,19 +495,36 @@ function HomeLayout(props: HomeLayoutProps) {
           // Save updated active asset settings.
           const allAssets = await walletService.retrieveWalletAssets(wallet.identifier);
           allAssets.forEach(async asset => {
+            let nodeUrl = `${asset.config?.nodeUrl ?? wallet.config.nodeUrl}`;
+            let indexingUrl = `${asset.config?.indexingUrl ?? wallet.config.indexingUrl}`;
+            let explorerUrl = `${asset.config?.explorerUrl ?? wallet.config.explorerUrl}`;
+            if (
+              asset.assetType === UserAssetType.EVM ||
+              asset.assetType === UserAssetType.CRC_20_TOKEN
+            ) {
+              nodeUrl = isTestnet ? TestNetEvmConfig.nodeUrl : MainNetEvmConfig.nodeUrl;
+              indexingUrl = isTestnet ? TestNetEvmConfig.indexingUrl : MainNetEvmConfig.indexingUrl;
+              explorerUrl = isTestnet ? TestNetEvmConfig.explorerUrl : MainNetEvmConfig.explorerUrl;
+            }
             const newlyUpdatedAsset: UserAsset = {
               ...asset,
+              description: asset.description.replace('Crypto.org Coin', 'Cronos'),
               config: {
                 ...asset.config!,
-                nodeUrl: asset.config?.nodeUrl ?? wallet.config.nodeUrl,
-                indexingUrl: asset.config?.indexingUrl ?? wallet.config.indexingUrl,
+                nodeUrl,
+                indexingUrl,
                 explorer: {
-                  baseUrl: `${asset.config?.explorerUrl ?? wallet.config.explorerUrl}`,
-                  tx: `${asset.config?.explorerUrl ?? wallet.config.explorerUrl}/tx`,
-                  address: `${asset.config?.explorerUrl ?? wallet.config.explorerUrl}/account`,
-                  validator: `${asset.config?.explorerUrl ?? wallet.config.explorerUrl}/validator`,
+                  baseUrl: `${explorerUrl}`,
+                  tx: `${explorerUrl}/tx`,
+                  address: `${explorerUrl}/${
+                    asset.assetType === UserAssetType.TENDERMINT ||
+                    asset.assetType === UserAssetType.IBC
+                      ? 'account'
+                      : 'address'
+                  }`,
+                  validator: `${explorerUrl}/validator`,
                 },
-                explorerUrl: asset.config?.explorerUrl ?? wallet.config.explorerUrl,
+                explorerUrl,
                 fee: {
                   gasLimit: String(asset.config?.fee.gasLimit ?? wallet.config.fee.gasLimit),
                   networkFee: String(asset.config?.fee.networkFee ?? wallet.config.fee.networkFee),
@@ -613,9 +664,17 @@ function HomeLayout(props: HomeLayoutProps) {
       );
 
       const isIbcVisible = allAssets.length > 1;
-      // const isIbcVisible = false;
+
       const announcementShown = await generalConfigService.checkIfHasShownAnalyticsPopup();
       const isAppLocked = await generalConfigService.getIfAppIsLockedByUser();
+
+      // let isAutoUpdateDisabled = await generalConfigService.checkIfAutoUpdateDisabled();
+      const autoUpdateExpireTime = await ipcRenderer.invoke('get_auto_update_expire_time');
+      // Enable Auto Update if expired
+      if (autoUpdateExpireTime < Date.now()) {
+        ipcRenderer.send('set_auto_update_expire_time', 0);
+      }
+
       setHasWallet(hasWalletBeenCreated);
       setSession({
         ...currentSession,
@@ -639,10 +698,10 @@ function HomeLayout(props: HomeLayoutProps) {
       const currentValidatorList = await walletService.retrieveTopValidators(
         currentSession.wallet.config.network.chainId,
       );
-      const currentNftList = await walletService.retrieveNFTs(currentSession.wallet.identifier);
+      const currentNftLists = await walletService.retrieveNFTs(currentSession.wallet.identifier);
 
       setValidatorList(currentValidatorList);
-      setNftList(currentNftList);
+      setNftList(currentNftLists);
 
       setFetchingDB(false);
 
@@ -709,10 +768,56 @@ function HomeLayout(props: HomeLayoutProps) {
   };
 
   const HomeMenu = () => {
+    const isTestnet = checkIfTestnet(session.wallet.config.network);
     let menuSelectedKey = currentLocationPath;
     if (!allPaths.includes(menuSelectedKey as NavbarMenuKey)) {
       menuSelectedKey = '/home';
     }
+
+    const homeMenuItemList = [
+      {
+        label: conditionalLink('/home', t('navbar.home')),
+        key: '/home',
+        icon: <Icon component={IconHome} />,
+      },
+      {
+        label: conditionalLink('/staking', t('navbar.staking')),
+        key: '/staking',
+        icon: <Icon component={IconStaking} />,
+      },
+      {
+        label: conditionalLink('/assets', t('navbar.assets')),
+        key: '/assets',
+        icon: <Icon component={IconAssets} />,
+      },
+      {
+        label: conditionalLink('/bridge', t('navbar.bridge')),
+        key: '/bridge',
+        icon: <Icon component={IconCronos} />,
+      },
+      !isTestnet
+        ? {
+            label: conditionalLink('/dapp', t('navbar.dapp')),
+            key: '/dapp',
+            icon: <Icon component={IconDApp} />,
+          }
+        : null,
+      {
+        label: conditionalLink('/governance', t('navbar.governance')),
+        key: '/governance',
+        icon: <BankOutlined />,
+      },
+      {
+        label: conditionalLink('/nft', t('navbar.nft')),
+        key: '/nft',
+        icon: <Icon component={IconNft} />,
+      },
+      {
+        label: conditionalLink('/settings', t('navbar.settings')),
+        key: '/settings',
+        icon: <SettingOutlined />,
+      },
+    ];
 
     return (
       <Menu
@@ -726,91 +831,58 @@ function HomeLayout(props: HomeLayoutProps) {
             setNavbarMenuSelectedKey(item.key as NavbarMenuKey);
           }
         }}
-      >
-        <Menu.Item key="/home" icon={<Icon component={IconHome} />}>
-          {conditionalLink('/home', t('navbar.home'))}
-        </Menu.Item>
-        <Menu.Item key="/staking" icon={<Icon component={IconStaking} />}>
-          {conditionalLink('/staking', t('navbar.staking'))}
-        </Menu.Item>
-        <Menu.Item key="/assets" icon={<Icon component={IconAssets} />}>
-          {conditionalLink('/assets', t('navbar.assets'))}
-        </Menu.Item>
-        <Menu.Item key="/bridge" icon={<Icon component={IconCronos} />}>
-          {conditionalLink('/bridge', t('navbar.bridge'))}
-        </Menu.Item>
-        {!checkIfTestnet(session.wallet.config.network) && (
-          <Menu.Item key="/dapp" icon={<Icon component={IconDApp} />}>
-            {conditionalLink('/dapp', t('navbar.dapp'))}
-          </Menu.Item>
-        )}
-        {/* <Menu.Item key="/send" icon={<Icon component={IconSend} />}>
-          <Link to="/send">{t('navbar.send')}</Link>
-        </Menu.Item>
-        <Menu.Item key="/receive" icon={<Icon component={IconReceive} />}>
-          <Link to="/receive">{t('navbar.receive')}</Link>
-        </Menu.Item> */}
-        <Menu.Item key="/governance" icon={<BankOutlined />}>
-          {conditionalLink('/governance', t('navbar.governance'))}
-        </Menu.Item>
-        <Menu.Item key="/nft" icon={<Icon component={IconNft} />}>
-          {conditionalLink('/nft', t('navbar.nft'))}
-        </Menu.Item>
-        <Menu.Item key="/settings" icon={<SettingOutlined />}>
-          {conditionalLink('/settings', t('navbar.settings'))}
-        </Menu.Item>
-      </Menu>
+        items={homeMenuItemList}
+      />
     );
   };
 
   const WalletMenu = () => {
+    const walletMenuItemList = [
+      ...(walletList.length <= LedgerWalletMaximum
+        ? [
+            {
+              label: conditionalLink('/restore', t('navbar.wallet.restore')),
+              key: 'restore-wallet-item',
+              className: 'restore-wallet-item',
+              icon: <ReloadOutlined style={{ color: '#1199fa' }} />,
+            },
+            {
+              label: conditionalLink('/create', t('navbar.wallet.create')),
+              key: 'create-wallet-item',
+              className: 'create-wallet-item',
+              icon: <PlusOutlined style={{ color: '#1199fa' }} />,
+            },
+          ]
+        : []),
+      ...(walletList.length > 1
+        ? [
+            {
+              label: t('navbar.wallet.delete'),
+              key: 'delete-wallet-item',
+              className: 'delete-wallet-item',
+              icon: <DeleteOutlined style={{ color: '#f27474' }} />,
+            },
+          ]
+        : []),
+      {
+        label: conditionalLink('/wallet', t('navbar.wallet.list')),
+        key: 'wallet-list-item',
+        className: 'wallet-list-item',
+        icon: <Icon component={IconWallet} style={{ color: '#1199fa' }} />,
+      }, // which is required
+    ];
+
     return (
-      <Menu>
-        {walletList.length <= LedgerWalletMaximum ? (
-          <>
-            <Menu.Item
-              className="restore-wallet-item"
-              key="restore-wallet-item"
-              icon={<ReloadOutlined style={{ color: '#1199fa' }} />}
-            >
-              {conditionalLink('/restore', t('navbar.wallet.restore'))}
-            </Menu.Item>
-            <Menu.Item
-              className="create-wallet-item"
-              key="create-wallet-item"
-              icon={<PlusOutlined style={{ color: '#1199fa' }} />}
-            >
-              {conditionalLink('/create', t('navbar.wallet.create'))}
-            </Menu.Item>
-          </>
-        ) : (
-          ''
-        )}
-        {walletList.length > 1 ? (
-          <>
-            <Menu.Item
-              className="delete-wallet-item"
-              key="delete-wallet-item"
-              icon={<DeleteOutlined style={{ color: '#f27474' }} />}
-              onClick={() => {
-                setDeleteWalletAddress(session.wallet.address);
-                setIsConfirmationModalVisible(true);
-              }}
-            >
-              {/* <DeleteOutlined /> */}
-              {t('navbar.wallet.delete')}
-            </Menu.Item>
-          </>
-        ) : (
-          ''
-        )}
-        <Menu.Item
-          key="wallet-list-item"
-          icon={<Icon component={IconWallet} style={{ color: '#1199fa' }} />}
-        >
-          {conditionalLink('/wallet', t('navbar.wallet.list'))}
-        </Menu.Item>
-      </Menu>
+      <Menu
+        items={walletMenuItemList}
+        onClick={({ key }) => {
+          if (key === 'delete-wallet-item') {
+            setDeleteWalletAddress(session.wallet.address);
+            setIsConfirmationModalVisible(true);
+          }
+        }}
+        className="wallet-menu"
+      />
     );
   };
 
@@ -836,8 +908,6 @@ function HomeLayout(props: HomeLayoutProps) {
         title={t('general.passwordFormModal.title')}
         visible={inputPasswordVisible}
         successButtonText={t('general.continue')}
-        confirmPassword={false}
-        repeatValidation
       />
 
       <SessionLockModal
@@ -875,11 +945,12 @@ function HomeLayout(props: HomeLayoutProps) {
 
             // Deleting local storage
             if (latestIncorrectAttemptCount >= MAX_INCORRECT_ATTEMPTS_ALLOWED) {
-              indexedDB.deleteDatabase('NeDB');
-              setTimeout(() => {
-                history.replace('/');
-                history.go(0);
-              }, 3000);
+              const deleteDBRequest = indexedDB.deleteDatabase('NeDB');
+              deleteDBRequest.onsuccess = () => {
+                setTimeout(() => {
+                  ipcRenderer.send('restart_app');
+                }, 3000);
+              };
             }
 
             // Show warning after `X` number of wrong attempts
@@ -905,14 +976,12 @@ function HomeLayout(props: HomeLayoutProps) {
         title={t('general.sessionLockModal.title')}
         visible={isSessionLockModalVisible}
         successButtonText={t('general.continue')}
-        confirmPassword={false}
-        repeatValidation
       />
 
       <Layout>
         <Sider className="home-sider">
           <div className="logo" />
-          <div className="version">CHAIN DESKTOP WALLET v{buildVersion}</div>
+          <div className="version">DEFI DESKTOP WALLET v{buildVersion}</div>
           <HomeMenu />
           <Button
             className="bottom-icon"

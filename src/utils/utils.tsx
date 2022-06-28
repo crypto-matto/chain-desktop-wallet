@@ -131,7 +131,7 @@ export function bech32ToEVMAddress(bech32Address: string) {
   return ethers.utils.getAddress(originalEVMAddress);
 }
 
-export function getCryptoOrgAsset(walletAllAssets: UserAsset[]) {
+export function getCronosTendermintAsset(walletAllAssets: UserAsset[]) {
   return walletAllAssets.find(asset => {
     return (
       asset.mainnetSymbol.toUpperCase() === 'CRO' &&
@@ -141,7 +141,11 @@ export function getCryptoOrgAsset(walletAllAssets: UserAsset[]) {
   });
 }
 
-export function getCronosAsset(walletAllAssets: UserAsset[]) {
+export const isUnlimited = (amount: ethers.BigNumber) => {
+  return amount.gte(ethers.BigNumber.from('0xffffffffffffffffffffffffffffffff'))
+}
+
+export function getCronosEvmAsset(walletAllAssets: UserAsset[]) {
   return walletAllAssets.find(asset => {
     return (
       asset.mainnetSymbol.toUpperCase() === 'CRO' &&
@@ -190,6 +194,20 @@ export function getChainName(name: string | undefined = '', config: WalletConfig
       default:
         return name;
     }
+  }
+}
+
+export function getAssetTypeName(assetType: UserAssetType | undefined) {
+  switch (assetType) {
+    case UserAssetType.TENDERMINT:
+    case UserAssetType.EVM:
+      return 'Cronos';
+    case UserAssetType.CRC_20_TOKEN:
+      return 'CRC20';
+    case UserAssetType.ERC_20_TOKEN:
+      return 'ERC20';
+    default:
+      return 'n.a.';
   }
 }
 

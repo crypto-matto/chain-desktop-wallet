@@ -10,8 +10,8 @@ import { sessionState, walletAllAssetsState } from '../../../recoil/atom';
 import { scaledBalance, UserAsset, UserAssetType } from '../../../models/UserAsset';
 import {
   middleEllipsis,
-  getCryptoOrgAsset,
-  getCronosAsset,
+  getCronosTendermintAsset,
+  getCronosEvmAsset,
   getChainName,
 } from '../../../utils/utils';
 import { fromScientificNotation, getCurrentMinAssetAmount } from '../../../utils/NumberUtils';
@@ -25,13 +25,12 @@ import { BridgeService } from '../../../service/bridge/BridgeService';
 import { walletService } from '../../../service/WalletService';
 import { BridgeTransferDirection } from '../../../service/bridge/BridgeConfig';
 import { TransactionUtils } from '../../../utils/TransactionUtils';
-import iconCronosSvg from '../../../assets/icon-cronos-blue.svg';
-import iconCroSvg from '../../../assets/icon-cro.svg';
 import RowAmountOption from '../../../components/RowAmountOption/RowAmountOption';
 import AddressBookInput from '../../../components/AddressBookInput/AddressBookInput';
 import { useLedgerStatus } from '../../../hooks/useLedgerStatus';
 import { ledgerNotification } from '../../../components/LedgerNotification/LedgerNotification';
 import { LEDGER_WALLET_TYPE } from '../../../service/LedgerService';
+import { AssetIcon, BridgeIcon } from '../../../components/AssetIcon';
 
 const { Option } = Select;
 const tailLayout = {
@@ -42,23 +41,6 @@ const layout = {
   // wrapperCol: { span: 16 },
 };
 
-const bridgeIcon = (bridgeValue: string | undefined) => {
-  let icon = iconCroSvg;
-
-  switch (bridgeValue) {
-    case 'CRYPTO_ORG':
-      icon = iconCroSvg;
-      break;
-    case 'CRONOS':
-      icon = iconCronosSvg;
-      break;
-    default:
-      break;
-  }
-
-  return <img src={icon} alt={bridgeValue} className="asset-icon" />;
-};
-
 const CronosBridgeForm = props => {
   const {
     form,
@@ -67,7 +49,6 @@ const CronosBridgeForm = props => {
     bridgeConfigForm,
     isBridgeValid,
     setIsBridgeValid,
-    assetIcon,
     currentAssetIdentifier,
     currentAsset,
     setCurrentAsset,
@@ -97,8 +78,8 @@ const CronosBridgeForm = props => {
   const analyticsService = new AnalyticsService(session);
   const bridgeService = new BridgeService(walletService.storageService);
 
-  const croAsset = getCryptoOrgAsset(walletAllAssets);
-  const cronosAsset = getCronosAsset(walletAllAssets);
+  const croAsset = getCronosTendermintAsset(walletAllAssets);
+  const cronosAsset = getCronosEvmAsset(walletAllAssets);
 
   const { isLedgerConnected } = useLedgerStatus({ asset: currentAsset });
 
@@ -316,8 +297,8 @@ const CronosBridgeForm = props => {
 
         const currentSession = await walletService.retrieveCurrentSession();
         const assets = await walletService.retrieveCurrentWalletAssets(currentSession);
-        const cro = getCryptoOrgAsset(assets);
-        const cronos = getCronosAsset(assets);
+        const cro = getCronosTendermintAsset(assets);
+        const cronos = getCronosEvmAsset(assets);
         const config = await bridgeService.retrieveBridgeConfig(defaultBridgeTransferDirection);
 
         setBridgeSupportedAssets([cro!]);
@@ -393,7 +374,7 @@ const CronosBridgeForm = props => {
             {supportedBridges.map(bridge => {
               return (
                 <Option value={bridge.value} key={bridge.value}>
-                  {bridgeIcon(bridge.value)}
+                  <BridgeIcon bridgeValue={bridge.value} />
                   {`${getChainName(bridge.label, session.wallet.config)}`}
                 </Option>
               );
@@ -473,7 +454,7 @@ const CronosBridgeForm = props => {
             {supportedBridges.map(bridge => {
               return (
                 <Option value={bridge.value} key={bridge.value}>
-                  {bridgeIcon(bridge.value)}
+                  <BridgeIcon bridgeValue={bridge.value} />
                   {`${getChainName(bridge.label, session.wallet.config)}`}
                 </Option>
               );
@@ -502,7 +483,7 @@ const CronosBridgeForm = props => {
             {bridgeSupportedAssets.map(asset => {
               return (
                 <Option value={asset.identifier} key={asset.identifier}>
-                  {assetIcon(asset)}
+                  <AssetIcon asset={asset} />
                   {`${asset.symbol}`}
                 </Option>
               );
@@ -644,7 +625,7 @@ const CronosBridgeForm = props => {
           <div className="flex-row">
             <div>{t('bridge.form.toAddress')}</div>
             <div className="asset-icon">
-              {bridgeIcon(form.getFieldValue('bridgeTo'))}
+              <BridgeIcon bridgeValue={form.getFieldValue('bridgeTo')} />
               {middleEllipsis(toAddress, 6)}
             </div>
           </div>

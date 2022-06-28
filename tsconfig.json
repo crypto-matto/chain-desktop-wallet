@@ -1,7 +1,12 @@
 {
   "compilerOptions": {
-    "target": "es5",
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "target": "es6",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext",
+      "ES2020.Promise"
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -16,7 +21,10 @@
     "jsx": "react",
     "noFallthroughCasesInSwitch": true,
     "noImplicitAny": false,
-    "experimentalDecorators": true  
+    "experimentalDecorators": true
   },
-  "include": ["src", "typings.d.ts"]
+  "include": [
+    "src",
+    "typings.d.ts"
+  ]
 }

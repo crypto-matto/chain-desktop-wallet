@@ -17,14 +17,12 @@ import { WalletImporter, WalletImportOptions } from './WalletImporter';
 import { NodeRpcService } from './rpc/NodeRpcService';
 import { Session } from '../models/Session';
 import { cryptographer } from '../crypto/Cryptographer';
-import { secretStoreService } from '../storage/SecretStoreService';
+import { secretStoreService } from './storage/SecretStoreService';
 import { AssetCreationType, AssetMarketPrice, UserAsset, UserAssetType } from '../models/UserAsset';
 import {
   BroadCastResult,
   CommonTransactionRecord,
   NftAccountTransactionData,
-  NftDenomModel,
-  NftModel,
   ProposalModel,
   RewardsBalances,
   RewardTransactionData,
@@ -37,9 +35,12 @@ import {
   UnbondingDelegationList,
   ValidatorModel,
 } from '../models/Transaction';
+import { CommonNftModel, NftDenomModel } from '../models/Nft';
 import { ChainIndexingAPI } from './rpc/ChainIndexingAPI';
 import { LEDGER_WALLET_TYPE } from './LedgerService';
 import {
+  RestakeStakingRewardRequest,
+  RestakeStakingAllRewardsRequest,
   BridgeTransferRequest,
   DelegationRequest,
   NFTDenomIssueRequest,
@@ -50,12 +51,15 @@ import {
   UndelegationRequest,
   VoteRequest,
   WithdrawStakingRewardRequest,
+  WithdrawAllStakingRewardRequest,
+  DepositToProposalRequest,
+  TextProposalRequest,
 } from './TransactionRequestModels';
 import { FinalTallyResult } from './rpc/NodeRpcModels';
 import { capitalizeFirstLetter } from '../utils/utils';
 import { WalletBuiltResult, WalletOps } from './WalletOps';
 import { STATIC_ASSET_COUNT } from '../config/StaticAssets';
-import { StorageService } from '../storage/StorageService';
+import { StorageService } from './storage/StorageService';
 import { TransactionPrepareService } from './TransactionPrepareService';
 import { TransactionHistoryService } from './TransactionHistoryService';
 import { TransactionSenderService } from './TransactionSenderService';
@@ -114,8 +118,46 @@ class WalletService {
     return await this.txSenderManager.sendStakingRewardWithdrawalTx(rewardWithdrawRequest);
   }
 
+  public async sendStakingWithdrawAllRewardsTx(
+    rewardWithdrawAllRequest: WithdrawAllStakingRewardRequest,
+  ): Promise<BroadCastResult> {
+    return await this.txSenderManager.sendStakingWithdrawAllRewardsTx(rewardWithdrawAllRequest);
+  }
+
+  public async sendRestakeRewardsTx(
+    restakeRequest: RestakeStakingRewardRequest,
+  ): Promise<BroadCastResult> {
+    return await this.txSenderManager.sendRestakeRewardTransaction(restakeRequest);
+  }
+
+  public async sendRestakeAllRewardsTx(
+    restakeAllRequest: RestakeStakingAllRewardsRequest,
+  ): Promise<BroadCastResult> {
+    return await this.txSenderManager.sendRestakeAllRewardsTransaction(restakeAllRequest);
+  }
+
   public async sendVote(voteRequest: VoteRequest): Promise<BroadCastResult> {
     return await this.txSenderManager.sendVote(voteRequest);
+  }
+
+  /**
+   * Creates, signs and broadcasts a new `MsgDeposit` transaction on-chain
+   * @param depositProposalRequest
+   */
+  public async sendProposalDepositTx(
+    depositProposalRequest: DepositToProposalRequest,
+  ): Promise<BroadCastResult> {
+    return await this.txSenderManager.sendMsgDepositTx(depositProposalRequest);
+  }
+
+  /**
+   * Creates, signs and broadcasts a new `MsgSubmitProposal.TextProposal` transaction on-chain
+   * @param textProposalSubmitRequest
+   */
+  public async sendTextProposalSubmitTx(
+    textProposalSubmitRequest: TextProposalRequest,
+  ): Promise<BroadCastResult> {
+    return await this.txSenderManager.sendSubmitTextProposalTransaction(textProposalSubmitRequest);
   }
 
   public async sendNFT(nftTransferRequest: NFTTransferRequest): Promise<BroadCastResult> {
@@ -197,6 +239,7 @@ class WalletService {
             data.hasBeenEncrypted,
             data.walletType,
             data.addressIndex,
+            data.derivationPathStandard,
           ),
       );
   }
@@ -339,7 +382,7 @@ class WalletService {
   public async retrieveDefaultWalletAsset(currentSession: Session): Promise<UserAsset> {
     const allWalletAssets: UserAsset[] = await this.retrieveCurrentWalletAssets(currentSession);
     // eslint-disable-next-line no-console
-    console.log('ALL_WALLET_ASSETS : ', allWalletAssets);
+    console.log('ALL_WALLET_ASSETS: ', allWalletAssets);
 
     for (let i = 0; i < allWalletAssets.length; i++) {
       if (!allWalletAssets[i].isSecondaryAsset) {
@@ -383,7 +426,7 @@ class WalletService {
       // eslint-disable-next-line no-empty
     } catch (e) {
       // eslint-disable-next-line no-console
-      // console.log('SYNC_ERROR', e);
+      // console.error('SYNC_ERROR', e);
       return Promise.resolve();
     }
   }
@@ -406,7 +449,7 @@ class WalletService {
       return await this.txHistoryManager.fetchAndSaveTransfersByAsset(session, asset);
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.log('SYNC_ERROR', e);
+      console.error('SYNC_ERROR', e);
       return Promise.resolve([]);
     }
   }
@@ -537,8 +580,8 @@ class WalletService {
       await axios.head(nodeUrl);
       return true;
     } catch (error) {
-      if (error && error.response) {
-        const { status } = error.response;
+      if (error && ((error as unknown) as any).response) {
+        const { status } = ((error as unknown) as any).response;
         return !(status >= 400 && status < 500);
       }
     }
@@ -579,12 +622,34 @@ class WalletService {
     return proposalSet.proposals;
   }
 
-  public async retrieveNFTs(walletID: string): Promise<NftModel[]> {
-    const nftSet = await this.storageService.retrieveAllNfts(walletID);
-    if (!nftSet) {
+  public async retrieveNFTs(walletID: string): Promise<CommonNftModel[]> {
+    const nftSets = await this.storageService.retrieveAllNfts(walletID);
+    if (!nftSets) {
       return [];
     }
-    return nftSet.nfts;
+    return nftSets;
+  }
+
+  public async retrieveCronosNFTTxs() {
+    return this.txHistoryManager.fetchCRC721TokenTxs();
+  }
+
+  public async fetchAccountVotingHistory(user_address: string) {
+    const currentSession = await this.storageService.retrieveCurrentSession();
+    if (currentSession?.wallet.config.nodeUrl === NOT_KNOWN_YET_VALUE) {
+      return Promise.resolve(null);
+    }
+
+    try {
+      const chainIndexAPI = ChainIndexingAPI.init(currentSession.wallet.config.indexingUrl);
+      const votingHistory = await chainIndexAPI.fetchAccountVotingHistory(user_address);
+
+      return votingHistory;
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('FAILED_LOADING Account Voting History data', e);
+      return null;
+    }
   }
 
   public async getDenomIdData(denomId: string): Promise<NftDenomModel | null> {
@@ -599,7 +664,7 @@ class WalletService {
       return nftDenomData.result;
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.log('FAILED_LOADING NFT denom data', e);
+      console.error('FAILED_LOADING NFT denom data', e);
 
       return null;
     }

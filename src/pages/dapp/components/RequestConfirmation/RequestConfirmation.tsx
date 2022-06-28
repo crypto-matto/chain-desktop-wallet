@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import './RequestConfirmation.less';
 
 import { useRecoilState } from 'recoil';
+import { ethers } from 'ethers';
 import {
   AssetMarketPrice,
   getAssetAmountInFiat,
@@ -18,12 +19,13 @@ import { Session } from '../../../../models/Session';
 import { SupportedChainName, SUPPORTED_CURRENCY } from '../../../../config/StaticConfig';
 import { Dapp, DappBrowserIPC } from '../../types';
 
-import { middleEllipsis, hexToUtf8, getAssetBySymbolAndChain } from '../../../../utils/utils';
+import { middleEllipsis, hexToUtf8, getAssetBySymbolAndChain, isUnlimited } from '../../../../utils/utils';
 import { walletService } from '../../../../service/WalletService';
 import { walletAllAssetsState } from '../../../../recoil/atom';
 import { useLedgerStatus } from '../../../../hooks/useLedgerStatus';
 import { LEDGER_WALLET_TYPE } from '../../../../service/LedgerService';
 import { ledgerNotification } from '../../../../components/LedgerNotification/LedgerNotification';
+import GasStepSelectEVMDApp from '../../../../components/GasStepSelect/GasStepSelectEVMDApp';
 
 const { Content, Footer } = Layout;
 
@@ -35,7 +37,7 @@ interface RequestConfirmationProps {
   wallet: Wallet;
   visible: boolean;
   dapp?: Dapp;
-  onConfirm: () => void;
+  onConfirm: (info: { gasPrice: BigNumber, gasLimit: BigNumber, event: DappBrowserIPC.Event }) => void;
   onCancel: () => void;
 }
 
@@ -58,6 +60,8 @@ const RequestConfirmation = (props: RequestConfirmationProps) => {
   const [isContractAddressReview, setIsContractAddressReview] = useState(false);
   const [isConfirmDisabled, setIsConfirmDisabled] = useState(false);
   const [allAssets, setAllAssets] = useRecoilState(walletAllAssetsState);
+  const [gasPrice, setGasPrice] = useState(new BigNumber((event.object as any)?.gasPrice ?? 0));
+  const [gasLimit, setGasLimit] = useState(new BigNumber((event.object as any)?.gas ?? 0));
 
   const { isLedgerConnected } = useLedgerStatus({ asset: cronosAsset });
 
@@ -83,7 +87,7 @@ const RequestConfirmation = (props: RequestConfirmationProps) => {
     setIsConfirmDisabled(false);
 
     if (event.name === 'signTransaction') {
-      const networkFee = event ? new BigNumber(event.object?.gas).times(event.object?.gasPrice) : 0;
+      const networkFee = event ? gasLimit.times(gasPrice) : 0;
       const total = event ? new BigNumber(event.object?.value ?? '0').plus(networkFee) : 0;
 
       const isDisabled = new BigNumber(cronosAsset?.balance ?? '0').isLessThan(total);
@@ -91,17 +95,14 @@ const RequestConfirmation = (props: RequestConfirmationProps) => {
 
       return (
         <>
-          <div className="row">
-            <div className="title">{t('dapp.requestConfirmation.networkFee.title')}</div>
-            <div>{`${scaledAmount(networkFee.toString(), cronosAsset?.decimals ?? 1)} ${
-              cronosAsset?.symbol
-            }`}</div>
-          </div>
+          <GasStepSelectEVMDApp asset={cronosAsset} gasLimit={gasLimit} gasPrice={gasPrice} onChange={(_gasLimit, _gasPrice) => {
+            setGasLimit(_gasLimit)
+            setGasPrice(_gasPrice)
+          }} />
           <div className="row">
             <div className="title">{t('dapp.requestConfirmation.total.title')}</div>
-            <div>{`${scaledAmount(total.toString(), cronosAsset?.decimals ?? 1)} ${
-              cronosAsset?.symbol
-            }`}</div>
+            <div>{`${scaledAmount(total.toString(), cronosAsset?.decimals ?? 1)} ${cronosAsset?.symbol
+              }`}</div>
           </div>
         </>
       );
@@ -149,9 +150,8 @@ const RequestConfirmation = (props: RequestConfirmationProps) => {
     }
 
     if (event.name === 'tokenApproval') {
-      const fee = new BigNumber(event.object.gas).times(event.object.gasPrice).toString();
-      const networkFee = fee;
-      const total = fee;
+      const networkFee = event ? gasLimit.times(gasPrice) : 0;
+      const total = networkFee;
       const { contractAddress } = event.object.tokenData;
 
       const isDisabled = new BigNumber(cronosAsset?.balance ?? '0').isLessThan(total);
@@ -159,18 +159,16 @@ const RequestConfirmation = (props: RequestConfirmationProps) => {
 
       return (
         <>
-          <div className="row">
-            <div className="title">{t('dapp.requestConfirmation.networkFee.title')}</div>
-            <div>{`${scaledAmount(networkFee.toString(), cronosAsset?.decimals ?? 1)} ${
-              cronosAsset?.symbol
-            }`}</div>
-          </div>
+          <GasStepSelectEVMDApp asset={cronosAsset} gasLimit={gasLimit} gasPrice={gasPrice} onChange={(_gasLimit, _gasPrice) => {
+            setGasLimit(_gasLimit)
+            setGasPrice(_gasPrice)
+          }} />
           <div className="row">
             <div className="title">{t('dapp.requestConfirmation.total.title')}</div>
-            <div>{`${scaledAmount(total.toString(), cronosAsset?.decimals ?? 1)} ${
-              cronosAsset?.symbol
-            }`}</div>
+            <div>{`${scaledAmount(total.toString(), cronosAsset?.decimals ?? 1)} ${cronosAsset?.symbol
+              }`}</div>
           </div>
+
           <div className="row">
             <div className="title">{t('dapp.requestConfirmation.contractAddress.title')}</div>
             <a onClick={() => setIsContractAddressReview(!isContractAddressReview)}>
@@ -181,6 +179,12 @@ const RequestConfirmation = (props: RequestConfirmationProps) => {
             className="contract-address"
             hidden={!isContractAddressReview}
           >{`${contractAddress}`}</div>
+          {
+            event.name === 'tokenApproval' && <div className="row">
+              <div className="title">{t('settings.revoke.amount')}</div>
+              <div>{isUnlimited(ethers.BigNumber.from(event.object.amount)) ? `${t('settings.revoke.unlimited')} ${event.object.tokenData.symbol}` : `${scaledAmount(event.object.amount, Number(event.object.tokenData.decimals))} ${event.object.tokenData.symbol}`}</div>
+            </div>
+          }
         </>
       );
     }
@@ -205,11 +209,11 @@ const RequestConfirmation = (props: RequestConfirmationProps) => {
       );
       const totalValue =
         assetMarketData &&
-        assetMarketData.price &&
-        currentAsset?.mainnetSymbol === assetMarketData.assetSymbol
+          assetMarketData.price &&
+          currentAsset?.mainnetSymbol === assetMarketData.assetSymbol
           ? `${SUPPORTED_CURRENCY.get(assetMarketData.currency)?.symbol}${numeral(
-              getAssetAmountInFiat(totalScaledAmount, assetMarketData),
-            ).format('0,0.00')} ${assetMarketData?.currency}`
+            getAssetAmountInFiat(totalScaledAmount, assetMarketData),
+          ).format('0,0.00')} ${assetMarketData?.currency}`
           : `${SUPPORTED_CURRENCY.get(currentSession.currency)?.symbol}--`;
 
       setMessage(`${totalScaledAmount} ${currentAsset?.symbol}`);
@@ -229,7 +233,7 @@ const RequestConfirmation = (props: RequestConfirmationProps) => {
         }),
       );
 
-      setSubMessage(`${dapp?.url}`);
+      setSubMessage(`${dapp?.url ?? ''}`);
       const asset = getAssetBySymbolAndChain(
         allAssets,
         event.object.tokenData.symbol,
@@ -277,7 +281,13 @@ const RequestConfirmation = (props: RequestConfirmationProps) => {
             <Button
               type="primary"
               htmlType="submit"
-              onClick={onConfirm}
+              onClick={() => {
+                onConfirm({
+                  gasLimit,
+                  gasPrice,
+                  event
+                })
+              }}
               disabled={
                 isConfirmDisabled ||
                 (!isLedgerConnected && currentSession.wallet.walletType === LEDGER_WALLET_TYPE)

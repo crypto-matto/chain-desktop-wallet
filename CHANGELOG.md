@@ -5,6 +5,83 @@ All notable changes to this project will be documented in this file.
 *Unreleased*
 
 *Released*
+## [v1.0.0] - 2022-06-21
+### Additions
+- Batch restake rewards
+- Rebranded as Crypto.com DeFi Desktop Wallet
+### Bug fixes
+- App crashes in URL search bar
+- Occasional incorrect reward list
+## [v0.8.1] - 2022-05-30
+### Bug fixes
+- Token Approval request failure
+## [v0.8.0] - 2022-05-27
+### Additions
+- Enforce better password protection on transactions
+### Bug fixes
+- Gas Fee validation on invalid values
+## [v0.7.9] - 2022-05-20
+### Additions
+- Revoke Token Permission
+- Batch withdraw rewards
+## [v0.7.8] - 2022-05-13
+### Bug fixes
+- Handle Ledger Live standard support on EVM transaction signing functions
+- Incorrect Transaction Failed popup on Testnet due to delayed transaction receipt return
+- UX optimization
+## [v0.7.7] - 2022-05-10
+### Additions
+- Gas Fee option customization panel
+- Ledger Wallet creation UX enhancement
+- Support Ledger Live Derivation Path standard
+### Bug fixes
+- Stablize Market Price fetching
+## [v0.7.6] - 2022-04-20
+### Bug fixes
+- Measures on preventing potential Phishing Attack on DApp Browser
+## [v0.7.5] - 2022-04-14
+### Additions
+- Cronos NFT support
+- Password protection on Address Book
+### Bug fixes
+- Restart & purge local storage automatically after 10 incorrect password attempts
+## [v0.7.4] - 2022-03-25
+### Additions
+- Duration selection for Auto Update disable
+### Bug fixes
+- Some CRC20 token price don't show properly
+- App crash when sending tokens with market price not available
+- Unable to withdraw Staking Rewards when validators > 10
+- Dead DApp list urls
+- Incorrect token settings during first time setup
+## [v0.7.3] - 2022-03-22
+### Additions
+- Tooltip for different Asset Types
+- Opt-in Auto Update
+- Update DApp list 
+### Bug fixes
+- Incorrect market price for some CRC20 tokens
+- Confirmation loop with Ledger in Bridge Transfer
+- Missing category filter in DApp List
+## [v0.7.2] - 2022-02-24
+### Additions
+- DApp List fetch from api.llama.fi
+- DApp List sorted by TVL in default
+### Bug fixes
+- Remove non-DApp projects in DApp List
+## [v0.7.1] - 2022-02-23
+### Additions
+- DApps Analytics
+### Bug fixes
+- DApps Ranking pictures not loaded
+- Incorrect Rpc URL
+- Security fix on dyld loading
+## [v0.7.0] - 2022-02-21
+### Additions
+- DApps Ranking
+- Cronos Rebranding
+### Bug fixes
+- UI bug on Redelegate & Undelegate funds
 ## [v0.6.9] - 2022-02-16
 ### Bug fixes
 - Ledger connectivity on Windows

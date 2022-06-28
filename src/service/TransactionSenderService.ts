@@ -1,6 +1,9 @@
 import Web3 from 'web3';
 import { TransactionConfig } from 'web3-eth';
+import { ethers } from 'ethers';
 import {
+  RestakeStakingRewardTransactionUnsigned,
+  RestakeStakingAllRewardsTransactionUnsigned,
   DelegateTransactionUnsigned,
   TransferTransactionUnsigned,
   UndelegateTransactionUnsigned,
@@ -10,12 +13,19 @@ import {
   WithdrawStakingRewardUnsigned,
   NFTDenomIssueUnsigned,
   NFTMintUnsigned,
+  EVMContractCallUnsigned,
+  WithdrawAllStakingRewardsUnsigned,
+  MsgDepositTransactionUnsigned,
+  TextProposalTransactionUnsigned,
 } from './signers/TransactionSupported';
 import { BroadCastResult } from '../models/Transaction';
-import { getBaseScaledAmount } from '../utils/NumberUtils';
 import { UserAsset, UserAssetType } from '../models/UserAsset';
+import { NftType } from '../models/Nft';
+import { getBaseScaledAmount } from '../utils/NumberUtils';
 import { DEFAULT_CLIENT_MEMO } from '../config/StaticConfig';
 import {
+  RestakeStakingRewardRequest,
+  RestakeStakingAllRewardsRequest,
   TransferRequest,
   DelegationRequest,
   UndelegationRequest,
@@ -23,19 +33,24 @@ import {
   VoteRequest,
   NFTTransferRequest,
   WithdrawStakingRewardRequest,
+  WithdrawAllStakingRewardRequest,
   BridgeTransferRequest,
   NFTDenomIssueRequest,
   NFTMintRequest,
+  DepositToProposalRequest,
+  TextProposalRequest,
 } from './TransactionRequestModels';
-import { StorageService } from '../storage/StorageService';
+import { StorageService } from './storage/StorageService';
 import { CronosClient } from './cronos/CronosClient';
 import { TransactionPrepareService } from './TransactionPrepareService';
 import { evmTransactionSigner } from './signers/EvmTransactionSigner';
 import { LEDGER_WALLET_TYPE, createLedgerDevice } from './LedgerService';
 import { TransactionHistoryService } from './TransactionHistoryService';
-import { getCronosAsset, sleep } from '../utils/utils';
+import { getCronosEvmAsset, sleep } from '../utils/utils';
 import { BridgeService } from './bridge/BridgeService';
 import { walletService } from './WalletService';
+import { getCronosTendermintFeeConfig } from './Gas';
+import { DerivationPathStandard } from './signers/LedgerSigner';
 
 export class TransactionSenderService {
   public readonly storageService: StorageService;
@@ -64,6 +79,8 @@ export class TransactionSenderService {
     const currentSession = await this.storageService.retrieveCurrentSession();
     const fromAddress = currentSession.wallet.address;
     const walletAddressIndex = currentSession.wallet.addressIndex;
+    const walletDerivationPathStandard =
+      currentSession.wallet.derivationPathStandard ?? DerivationPathStandard.BIP44;
     if (!transferRequest.memo && !currentSession.wallet.config.disableDefaultClientMemo) {
       transferRequest.memo = DEFAULT_CLIENT_MEMO;
     }
@@ -121,6 +138,7 @@ export class TransactionSenderService {
 
             signedTx = await device.signEthTx(
               walletAddressIndex,
+              walletDerivationPathStandard,
               Number(transfer.asset?.config?.chainId), // chainid
               transfer.nonce,
               web3.utils.toHex(gasLimitTx) /* gas limit */,
@@ -145,7 +163,7 @@ export class TransactionSenderService {
         } catch (e) {
           // eslint-disable-next-line no-console
           console.log(`ERROR_TRANSFERRING - ${currentAsset.assetType}`, e);
-          throw TypeError(e);
+          throw TypeError(e as any);
         }
 
       case UserAssetType.CRC_20_TOKEN:
@@ -156,7 +174,7 @@ export class TransactionSenderService {
           const allAssets = await walletService.retrieveWalletAssets(
             currentSession.wallet.identifier,
           );
-          const chainConfig = getCronosAsset(allAssets)?.config;
+          const chainConfig = getCronosEvmAsset(allAssets)?.config;
 
           // currentAsset's config is not changeable, use a new instance instead
           const transferAsset: UserAsset = {
@@ -219,6 +237,7 @@ export class TransactionSenderService {
 
             signedTx = await device.signEthTx(
               walletAddressIndex,
+              walletDerivationPathStandard,
               Number(transfer.asset?.config?.chainId), // chainid
               transfer.nonce,
               web3.utils.toHex(gasLimitTx) /* gas limit */,
@@ -246,12 +265,14 @@ export class TransactionSenderService {
             `ERROR_TRANSFERRING_TOKEN - ${currentAsset.assetType} ${currentAsset.symbol}`,
             e,
           );
-          throw TypeError(e);
+          throw TypeError(e as any);
         }
 
       case UserAssetType.TENDERMINT:
       case UserAssetType.IBC:
       case undefined: {
+        const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
+
         const {
           nodeRpc,
           accountNumber,
@@ -267,7 +288,7 @@ export class TransactionSenderService {
           memo: transferRequest.memo,
           accountNumber,
           accountSequence,
-          asset: currentAsset,
+          asset: transferRequest.asset,
         };
 
         let signedTxHex: string = '';
@@ -276,11 +297,15 @@ export class TransactionSenderService {
           signedTxHex = await ledgerTransactionSigner.signTransfer(
             transfer,
             transferRequest.decryptedPhrase,
+            networkFee,
+            gasLimit,
           );
         } else {
           signedTxHex = await transactionSigner.signTransfer(
             transfer,
             transferRequest.decryptedPhrase,
+            networkFee,
+            gasLimit,
           );
         }
 
@@ -331,15 +356,133 @@ export class TransactionSenderService {
     };
 
     let signedTxHex: string;
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
+
     if (delegationRequest.walletType === LEDGER_WALLET_TYPE) {
       signedTxHex = await ledgerTransactionSigner.signDelegateTx(
         delegateTransaction,
         delegationRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     } else {
       signedTxHex = await transactionSigner.signDelegateTx(
         delegateTransaction,
         delegationRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
+      );
+    }
+
+    const broadCastResult = await nodeRpc.broadcastTransaction(signedTxHex);
+    await Promise.all([
+      await this.txHistoryManager.fetchAndUpdateBalances(currentSession),
+      await this.txHistoryManager.fetchAndSaveDelegations(nodeRpc, currentSession),
+    ]);
+
+    return broadCastResult;
+  }
+
+  public async sendRestakeRewardTransaction(
+    restakeRequest: RestakeStakingRewardRequest,
+  ): Promise<BroadCastResult> {
+    const {
+      nodeRpc,
+      accountNumber,
+      accountSequence,
+      currentSession,
+      transactionSigner,
+      ledgerTransactionSigner,
+    } = await this.transactionPrepareService.prepareTransaction();
+
+    const delegationAmountScaled = getBaseScaledAmount(restakeRequest.amount, restakeRequest.asset);
+
+    let { memo } = restakeRequest;
+    if (!memo && !currentSession.wallet.config.disableDefaultClientMemo) {
+      memo = DEFAULT_CLIENT_MEMO;
+    }
+
+    const restakeTransaction: RestakeStakingRewardTransactionUnsigned = {
+      delegatorAddress: currentSession.wallet.address,
+      validatorAddress: restakeRequest.validatorAddress,
+      amount: String(delegationAmountScaled),
+      memo,
+      accountNumber,
+      accountSequence,
+    };
+
+    let signedTxHex: string;
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
+
+    if (restakeRequest.walletType === LEDGER_WALLET_TYPE) {
+      signedTxHex = await ledgerTransactionSigner.signRestakeStakingRewardTx(
+        restakeTransaction,
+        restakeRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
+      );
+    } else {
+      signedTxHex = await transactionSigner.signRestakeStakingRewardTx(
+        restakeTransaction,
+        restakeRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
+      );
+    }
+
+    const broadCastResult = await nodeRpc.broadcastTransaction(signedTxHex);
+    await Promise.all([
+      await this.txHistoryManager.fetchAndUpdateBalances(currentSession),
+      await this.txHistoryManager.fetchAndSaveDelegations(nodeRpc, currentSession),
+    ]);
+
+    return broadCastResult;
+  }
+
+  public async sendRestakeAllRewardsTransaction(
+    restakeRequest: RestakeStakingAllRewardsRequest,
+  ): Promise<BroadCastResult> {
+    const {
+      nodeRpc,
+      accountNumber,
+      accountSequence,
+      currentSession,
+      transactionSigner,
+      ledgerTransactionSigner,
+    } = await this.transactionPrepareService.prepareTransaction();
+
+    let { memo } = restakeRequest;
+    if (!memo && !currentSession.wallet.config.disableDefaultClientMemo) {
+      memo = DEFAULT_CLIENT_MEMO;
+    }
+
+    const restakeAllRewardsTransaction: RestakeStakingAllRewardsTransactionUnsigned = {
+      delegatorAddress: currentSession.wallet.address,
+      validatorAddressList: restakeRequest.validatorAddressList,
+      amountList: restakeRequest.amountList.map(rewardAmount =>
+        getBaseScaledAmount(rewardAmount, restakeRequest.asset),
+      ),
+      memo,
+      accountNumber,
+      accountSequence,
+    };
+
+    let signedTxHex: string;
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
+
+    if (restakeRequest.walletType === LEDGER_WALLET_TYPE) {
+      signedTxHex = await ledgerTransactionSigner.signRestakeAllStakingRewardsTx(
+        restakeAllRewardsTransaction,
+        restakeRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
+      );
+    } else {
+      signedTxHex = await transactionSigner.signRestakeAllStakingRewardsTx(
+        restakeAllRewardsTransaction,
+        restakeRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     }
 
@@ -384,15 +527,21 @@ export class TransactionSenderService {
     };
 
     let signedTxHex: string;
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
+
     if (undelegationRequest.walletType === LEDGER_WALLET_TYPE) {
       signedTxHex = await ledgerTransactionSigner.signUndelegateTx(
         undelegateTransaction,
         undelegationRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     } else {
       signedTxHex = await transactionSigner.signUndelegateTx(
         undelegateTransaction,
         undelegationRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     }
 
@@ -438,15 +587,21 @@ export class TransactionSenderService {
     };
 
     let signedTxHex: string;
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
+
     if (redelegationRequest.walletType === LEDGER_WALLET_TYPE) {
       signedTxHex = await ledgerTransactionSigner.signRedelegateTx(
         redelegateTransactionUnsigned,
         redelegationRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     } else {
       signedTxHex = await transactionSigner.signRedelegateTx(
         redelegateTransactionUnsigned,
         redelegationRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     }
 
@@ -478,16 +633,21 @@ export class TransactionSenderService {
     };
 
     let signedTxHex: string = '';
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
 
     if (voteRequest.walletType === LEDGER_WALLET_TYPE) {
       signedTxHex = await ledgerTransactionSigner.signVoteTransaction(
         voteTransactionUnsigned,
         voteRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     } else {
       signedTxHex = await transactionSigner.signVoteTransaction(
         voteTransactionUnsigned,
         voteRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     }
 
@@ -496,7 +656,9 @@ export class TransactionSenderService {
     return broadCastResult;
   }
 
-  public async sendNFT(nftTransferRequest: NFTTransferRequest): Promise<BroadCastResult> {
+  public async sendMsgDepositTx(
+    depositRequest: DepositToProposalRequest,
+  ): Promise<BroadCastResult> {
     const {
       nodeRpc,
       accountNumber,
@@ -506,42 +668,233 @@ export class TransactionSenderService {
       ledgerTransactionSigner,
     } = await this.transactionPrepareService.prepareTransaction();
 
-    const memo = !nftTransferRequest.memo ? DEFAULT_CLIENT_MEMO : nftTransferRequest.memo;
-
-    const nftTransferUnsigned: NFTTransferUnsigned = {
-      tokenId: nftTransferRequest.tokenId,
-      denomId: nftTransferRequest.denomId,
-      sender: nftTransferRequest.sender,
-      recipient: nftTransferRequest.recipient,
-
-      memo,
+    const depositToProposalUnsigned: MsgDepositTransactionUnsigned = {
+      proposalId: depositRequest.proposalId,
+      depositor: depositRequest.depositor,
+      amount: depositRequest.amount,
+      memo: '', // Todo: This can be brought up in future transactions
       accountNumber,
       accountSequence,
     };
 
     let signedTxHex: string = '';
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
 
-    if (nftTransferRequest.walletType === LEDGER_WALLET_TYPE) {
-      signedTxHex = await ledgerTransactionSigner.signNFTTransfer(
-        nftTransferUnsigned,
-        nftTransferRequest.decryptedPhrase,
+    if (depositRequest.walletType === LEDGER_WALLET_TYPE) {
+      signedTxHex = await ledgerTransactionSigner.signProposalDepositTransaction(
+        depositToProposalUnsigned,
+        depositRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     } else {
-      signedTxHex = await transactionSigner.signNFTTransfer(
-        nftTransferUnsigned,
-        nftTransferRequest.decryptedPhrase,
+      signedTxHex = await transactionSigner.signProposalDepositTransaction(
+        depositToProposalUnsigned,
+        depositRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     }
 
     const broadCastResult = await nodeRpc.broadcastTransaction(signedTxHex);
-
-    // It takes a few seconds for the indexing service to sync latest NFT state
-    await sleep(7_000);
-    await Promise.all([
-      this.txHistoryManager.fetchAndSaveNFTs(currentSession),
-      this.txHistoryManager.fetchAndSaveNFTAccountTxs(currentSession),
-    ]);
+    await this.txHistoryManager.fetchAndSaveProposals(currentSession);
     return broadCastResult;
+  }
+
+  /**
+   *
+   * @param textProposalSubmitRequest
+   */
+  public async sendSubmitTextProposalTransaction(
+    textProposalSubmitRequest: TextProposalRequest,
+  ): Promise<BroadCastResult> {
+    const {
+      nodeRpc,
+      accountNumber,
+      accountSequence,
+      currentSession,
+      transactionSigner,
+      ledgerTransactionSigner,
+    } = await this.transactionPrepareService.prepareTransaction();
+
+    const submitTextProposalUnsigned: TextProposalTransactionUnsigned = {
+      params: {
+        description: textProposalSubmitRequest.description,
+        title: textProposalSubmitRequest.title,
+      },
+      proposer: textProposalSubmitRequest.proposer,
+      initialDeposit: textProposalSubmitRequest.initialDeposit,
+      memo: '', // Todo: This can be brought up in future transactions
+      accountNumber,
+      accountSequence,
+    };
+
+    let signedTxHex: string = '';
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
+
+    if (textProposalSubmitRequest.walletType === LEDGER_WALLET_TYPE) {
+      signedTxHex = await ledgerTransactionSigner.signSubmitTextProposalTransaction(
+        submitTextProposalUnsigned,
+        textProposalSubmitRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
+      );
+    } else {
+      signedTxHex = await transactionSigner.signSubmitTextProposalTransaction(
+        submitTextProposalUnsigned,
+        textProposalSubmitRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
+      );
+    }
+
+    const broadCastResult = await nodeRpc.broadcastTransaction(signedTxHex);
+    await this.txHistoryManager.fetchAndSaveProposals(currentSession);
+    return broadCastResult;
+  }
+
+  public async sendNFT(nftTransferRequest: NFTTransferRequest): Promise<BroadCastResult> {
+    const currentSession = await this.storageService.retrieveCurrentSession();
+
+    switch (nftTransferRequest.nftType) {
+      case NftType.CRYPTO_ORG: {
+        const {
+          nodeRpc,
+          accountNumber,
+          accountSequence,
+          transactionSigner,
+          ledgerTransactionSigner,
+        } = await this.transactionPrepareService.prepareTransaction();
+
+        const memo = !nftTransferRequest.memo ? DEFAULT_CLIENT_MEMO : nftTransferRequest.memo;
+
+        const nftTransferUnsigned: NFTTransferUnsigned = {
+          tokenId: nftTransferRequest.tokenId,
+          denomId: nftTransferRequest.denomId,
+          sender: nftTransferRequest.sender,
+          recipient: nftTransferRequest.recipient,
+
+          memo,
+          accountNumber,
+          accountSequence,
+        };
+
+        let signedTxHex = '';
+        const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
+
+        if (nftTransferRequest.walletType === LEDGER_WALLET_TYPE) {
+          signedTxHex = await ledgerTransactionSigner.signNFTTransfer(
+            nftTransferUnsigned,
+            nftTransferRequest.decryptedPhrase,
+            networkFee,
+            gasLimit,
+          );
+        } else {
+          signedTxHex = await transactionSigner.signNFTTransfer(
+            nftTransferUnsigned,
+            nftTransferRequest.decryptedPhrase,
+            networkFee,
+            gasLimit,
+          );
+        }
+
+        // It takes a few seconds for the indexing service to sync latest NFT state
+        await sleep(7_000);
+        await Promise.all([
+          this.txHistoryManager.fetchAndSaveNFTs(currentSession),
+          this.txHistoryManager.fetchAndSaveNFTAccountTxs(currentSession),
+        ]);
+
+        const broadCastResult = await nodeRpc.broadcastTransaction(signedTxHex);
+
+        return broadCastResult;
+      }
+      case NftType.CRC_721_TOKEN: {
+        const {
+          sender,
+          recipient,
+          tokenId,
+          tokenContractAddress,
+          asset,
+          decryptedPhrase,
+        } = nftTransferRequest;
+
+        if (!asset.config?.nodeUrl) {
+          throw TypeError(`Missing asset config: ${asset.config}`);
+        }
+
+        const encodedABITokenTransferData = evmTransactionSigner.encodeNFTTransferABI(
+          tokenContractAddress,
+          {
+            tokenId,
+            sender,
+            recipient,
+          },
+        );
+
+        const estimatedGasLimit = await evmTransactionSigner.getNFTSafeTransferFromEstimatedGas(
+          asset,
+          tokenContractAddress,
+          {
+            tokenId,
+            sender,
+            recipient,
+          },
+        );
+
+        const prepareTXConfig: TransactionConfig = {
+          from: sender,
+          to: recipient,
+          data: encodedABITokenTransferData,
+        };
+
+        const prepareTxInfo = await this.transactionPrepareService.prepareEVMTransaction(
+          asset,
+          prepareTXConfig,
+        );
+
+        const txConfig: EVMContractCallUnsigned = {
+          from: sender,
+          contractAddress: tokenContractAddress,
+          data: encodedABITokenTransferData,
+          nonce: prepareTxInfo.nonce,
+          gasPrice: ethers.utils.hexValue(BigInt(prepareTxInfo.loadedGasPrice)),
+          gasLimit: ethers.utils.hexValue(estimatedGasLimit),
+        };
+
+        try {
+          const result = await evmTransactionSigner.sendContractCallTransaction(
+            asset!,
+            txConfig,
+            decryptedPhrase,
+            asset.config?.nodeUrl,
+          );
+
+          await sleep(7_000);
+          await Promise.all([
+            this.txHistoryManager.fetchAndSaveNFTs(currentSession),
+            this.txHistoryManager.fetchAndSaveNFTAccountTxs(currentSession),
+          ]);
+
+          const broadCastResult = {
+            transactionHash: result,
+            message: '',
+            code: 200,
+          };
+
+          return broadCastResult;
+        } catch (error) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `ERROR_TRANSFERRING_NFT - ${nftTransferRequest.tokenContractAddress}_${nftTransferRequest.tokenId}`,
+            error,
+          );
+          throw error;
+        }
+      }
+      default:
+        throw TypeError('NFT Type Not supported yet');
+    }
   }
 
   public async sendStakingRewardWithdrawalTx(
@@ -566,15 +919,69 @@ export class TransactionSenderService {
 
     let signedTxHex: string;
 
+    const { gasLimit, networkFee } = await getCronosTendermintFeeConfig();
+
     if (rewardWithdrawRequest.walletType === LEDGER_WALLET_TYPE) {
       signedTxHex = await ledgerTransactionSigner.signWithdrawStakingRewardTx(
         withdrawStakingReward,
         rewardWithdrawRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     } else {
       signedTxHex = await transactionSigner.signWithdrawStakingRewardTx(
         withdrawStakingReward,
         rewardWithdrawRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
+      );
+    }
+
+    const broadCastResult = await nodeRpc.broadcastTransaction(signedTxHex);
+    await Promise.all([
+      await this.txHistoryManager.fetchAndSaveRewards(nodeRpc, currentSession),
+      await this.txHistoryManager.fetchAndUpdateBalances(currentSession),
+    ]);
+    return broadCastResult;
+  }
+
+  public async sendStakingWithdrawAllRewardsTx(
+    rewardWithdrawAllRequest: WithdrawAllStakingRewardRequest,
+  ): Promise<BroadCastResult> {
+    const {
+      nodeRpc,
+      accountNumber,
+      accountSequence,
+      currentSession,
+      transactionSigner,
+      ledgerTransactionSigner,
+    } = await this.transactionPrepareService.prepareTransaction();
+
+    const withdrawAllStakingReward: WithdrawAllStakingRewardsUnsigned = {
+      delegatorAddress: currentSession.wallet.address,
+      validatorAddressList: rewardWithdrawAllRequest.validatorAddressList,
+      memo: DEFAULT_CLIENT_MEMO,
+      accountNumber,
+      accountSequence,
+    };
+
+    let signedTxHex: string;
+
+    const { gasLimit, networkFee } = await getCronosTendermintFeeConfig();
+
+    if (rewardWithdrawAllRequest.walletType === LEDGER_WALLET_TYPE) {
+      signedTxHex = await ledgerTransactionSigner.signWithdrawAllStakingRewardsTx(
+        withdrawAllStakingReward,
+        rewardWithdrawAllRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
+      );
+    } else {
+      signedTxHex = await transactionSigner.signWithdrawAllStakingRewardsTx(
+        withdrawAllStakingReward,
+        rewardWithdrawAllRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     }
 
@@ -603,7 +1010,7 @@ export class TransactionSenderService {
     return bridgeTransactionResult;
   }
 
-  /* _______________________
+  /* _________________________
         NFT RELATED FUNCTIONS  
      _________________________ */
 
@@ -634,16 +1041,21 @@ export class TransactionSenderService {
     };
 
     let signedTxHex: string = '';
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
 
     if (nftMintRequest.walletType === LEDGER_WALLET_TYPE) {
       signedTxHex = await ledgerTransactionSigner.signNFTMint(
         nftMintUnsigned,
         nftMintRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     } else {
       signedTxHex = await transactionSigner.signNFTMint(
         nftMintUnsigned,
         nftMintRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     }
 
@@ -680,16 +1092,21 @@ export class TransactionSenderService {
     };
 
     let signedTxHex: string = '';
+    const { networkFee, gasLimit } = await getCronosTendermintFeeConfig();
 
     if (nftDenomIssueRequest.walletType === LEDGER_WALLET_TYPE) {
       signedTxHex = await ledgerTransactionSigner.signNFTDenomIssue(
         nftDenomIssueUnsigned,
         nftDenomIssueRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     } else {
       signedTxHex = await transactionSigner.signNFTDenomIssue(
         nftDenomIssueUnsigned,
         nftDenomIssueRequest.decryptedPhrase,
+        networkFee,
+        gasLimit,
       );
     }
 
